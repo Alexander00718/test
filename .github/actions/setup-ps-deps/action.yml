@@ -1,0 +1,20 @@
+name: Setup PowerShell dev dependencies
+description: Cache and install Pester and PSScriptAnalyzer using the project's own installer.
+
+# Deliberately delegates to build/Install-DevDependencies.ps1 so CI installs
+# dependencies the exact same way a developer does locally. If that script
+# breaks, CI breaks with it - which is the point.
+runs:
+  using: composite
+  steps:
+    - name: Cache PowerShell modules
+      id: psmodules
+      uses: actions/cache@v4
+      with:
+        path: ~\Documents\WindowsPowerShell\Modules
+        key: psmodules-${{ runner.os }}-pester5.5.0-pssa1.22.0
+
+    - name: Install PowerShell modules
+      if: steps.psmodules.outputs.cache-hit != 'true'
+      shell: powershell
+      run: .\build\Install-DevDependencies.ps1

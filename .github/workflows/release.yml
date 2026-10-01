@@ -3,15 +3,21 @@ name: Release
 # Tag a commit to ship it:  git tag v1.0.0 && git push origin v1.0.0
 on:
   push:
-    tags: [ 'v*.*.*' ]
+    tags: ['v*.*.*']
   workflow_dispatch:
     inputs:
       version:
         description: 'Version to build, e.g. 1.0.0'
         required: true
 
+# contents:write is the only elevated permission in this repository, and it
+# exists solely so the release job can create a GitHub Release.
 permissions:
-  contents: write   # needed to create the GitHub Release
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false   # never interrupt a publish midway
 
 jobs:
   release:
@@ -24,12 +30,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install PowerShell modules
-        shell: powershell
-        run: |
-          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
-          Install-Module Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck -Scope CurrentUser
-          Install-Module PSScriptAnalyzer -MinimumVersion 1.22.0 -Force -Scope CurrentUser
+      # Same dependency path as CI and as a developer's machine.
+      - uses: ./.github/actions/setup-ps-deps
 
       # A release never ships unverified: the same gates as CI, strict.
       - name: Lint

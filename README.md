@@ -97,16 +97,49 @@ Totals survive restarts and roll over automatically at midnight.
 
 ## Development
 
-```powershell
-Install-Module Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck -Scope CurrentUser
-Install-Module PSScriptAnalyzer -MinimumVersion 1.22.0 -Force -Scope CurrentUser
+One-time setup. This uses the same script CI uses, so a green local run means
+the same dependency versions were exercised:
 
-.\build\Build.ps1                 # lint + test + package
+```powershell
+.\build\Install-DevDependencies.ps1
 ```
 
-See [docs/CICD.md](docs/CICD.md) for the pipeline, including an honest list of
-what CI does and does not prove.
+It fetches Pester and PSScriptAnalyzer straight from the PowerShell Gallery
+rather than calling `Install-Module`, because stock Windows ships
+PowerShellGet 1.0.0.1, which blocks forever on an invisible NuGet-provider
+prompt when no terminal is attached.
 
+### Run the CI checks locally
+
+Every gate CI enforces, in the order CI runs it:
+
+```powershell
+.\build\Build.ps1 -Task Lint -Strict    # job 1: PSScriptAnalyzer, warnings fail
+.\build\Build.ps1 -Task Test            # job 2: Pester + coverage
+.\build\Build.ps1 -Task Package         # job 3: zip + SHA256
+
+.\build\Build.ps1                       # all three, lint non-strict
+```
+
+There is no hidden pipeline logic: the workflows call this one script.
+
+### Pipeline
+
+| Workflow | Trigger | Does |
+|---|---|---|
+| `ci.yml` | pull requests, pushes to `main` | **Lint** and **Test** run concurrently; **Build** runs only if both pass |
+| `cd.yml` | after CI succeeds on `main` | Dormant. Reports which deployment configuration is missing; activates when a `DEPLOY_TARGET` repository variable is set |
+| `release.yml` | tags matching `v*.*.*` | Re-runs every gate, then publishes a GitHub Release with the zip and its SHA256 |
+
+Runner is `windows-latest` with `shell: powershell`, which is Windows
+PowerShell 5.1 - the engine the app targets. CI cannot pass on a runtime the
+users do not have.
+
+`permissions: contents: read` applies to CI and CD. Only `release.yml`
+requests `contents: write`, and only to create the Release.
+
+See [docs/CICD.md](docs/CICD.md) for the full pipeline description, including
+an honest list of what CI does and does not prove.
 ## Known limits
 
 - **Cursor movement only.** Typing without touching the mouse counts as idle -
