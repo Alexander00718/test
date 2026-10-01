@@ -236,3 +236,130 @@ Describe 'ConvertTo-DayRecord' {
         $back.idleEpisodes  | Should -Be 2
     }
 }
+
+Describe 'Get-TrackerSettingSpec' {
+    It 'exposes every user-editable setting' {
+        $names = (Get-TrackerSettingSpec).Name
+        foreach ($n in 'idleSeconds', 'alarmSeconds', 'movementThresholdPx', 'pollMs',
+                       'alarmEnabled', 'notificationEnabled', 'suppressWhenLocked', 'showDailySummary') {
+            $names | Should -Contain $n
+        }
+    }
+    It 'only names settings that actually exist in the defaults' {
+        $defaults = Get-TrackerDefault
+        foreach ($s in Get-TrackerSettingSpec) {
+            $defaults.ContainsKey($s.Name) | Should -BeTrue -Because ($s.Name + ' must exist in defaults')
+        }
+    }
+    It 'gives every integer setting a sane range' {
+        foreach ($s in (Get-TrackerSettingSpec | Where-Object { $_.Kind -eq 'int' })) {
+            $s.Min | Should -BeLessThan $s.Max
+        }
+    }
+}
+
+Describe 'Test-TrackerSetting - the alarm time the user can set' {
+    It 'accepts a plain number' {
+        $r = Test-TrackerSetting -Name 'idleSeconds' -Value 300
+        $r.Valid | Should -BeTrue
+        $r.Value | Should -Be 300
+    }
+    It 'accepts a numeric string with surrounding spaces' {
+        $r = Test-TrackerSetting -Name 'idleSeconds' -Value '  90  '
+        $r.Valid | Should -BeTrue
+        $r.Value | Should -Be 90
+    }
+    It 'rejects a value below the minimum' {
+        $r = Test-TrackerSetting -Name 'idleSeconds' -Value 1
+        $r.Valid   | Should -BeFalse
+        $r.Message | Should -Match 'between 5 and 7200'
+    }
+    It 'rejects a value above the maximum' {
+        $r = Test-TrackerSetting -Name 'idleSeconds' -Value 99999
+        $r.Valid | Should -BeFalse
+    }
+    It 'rejects text that is not a number' {
+        $r = Test-TrackerSetting -Name 'idleSeconds' -Value 'soon'
+        $r.Valid   | Should -BeFalse
+        $r.Message | Should -Match 'whole number'
+    }
+    It 'accepts the boundary values exactly' {
+        (Test-TrackerSetting -Name 'idleSeconds' -Value 5).Valid    | Should -BeTrue
+        (Test-TrackerSetting -Name 'idleSeconds' -Value 7200).Valid  | Should -BeTrue
+    }
+    It 'normalises checkbox booleans' {
+        (Test-TrackerSetting -Name 'alarmEnabled' -Value $true).Value   | Should -BeTrue
+        (Test-TrackerSetting -Name 'alarmEnabled' -Value 'false').Value | Should -BeFalse
+        (Test-TrackerSetting -Name 'alarmEnabled' -Value 'ON').Value    | Should -BeTrue
+        (Test-TrackerSetting -Name 'alarmEnabled' -Value '0').Value     | Should -BeFalse
+    }
+    It 'rejects nonsense for a boolean setting' {
+        $r = Test-TrackerSetting -Name 'alarmEnabled' -Value 'maybe'
+        $r.Valid   | Should -BeFalse
+        $r.Message | Should -Match 'true or false'
+    }
+    It 'rejects an unknown setting name' {
+        $r = Test-TrackerSetting -Name 'nope' -Value 1
+        $r.Valid   | Should -BeFalse
+        $r.Message | Should -Match 'Unknown setting'
+    }
+    It 'feeds straight back into Resolve-TrackerConfig' {
+        $r = Test-TrackerSetting -Name 'idleSeconds' -Value '45'
+        $cfg = Resolve-TrackerConfig -Default (Get-TrackerDefault) -Override @{ idleSeconds = $r.Value }
+        $cfg.idleSeconds | Should -Be 45
+    }
+}
+
+Describe 'Format-DaySummary' {
+    It 'reports the total working time for the day' {
+        $text = Format-DaySummary -Day ([datetime]'2026-03-04') -ActiveSeconds 3725 -IdleEpisodes 3 -LongestIdleSeconds 600
+        $text | Should -Match '01:02:05'
+        $text | Should -Match 'Total working time'
+        $text | Should -Match 'Idle episodes      : 3'
+        $text | Should -Match '00:10:00'
+    }
+    It 'names the day it is reporting on' {
+        $text = Format-DaySummary -Day ([datetime]'2026-03-04') -ActiveSeconds 0
+        $text | Should -Match '2026'
+        $text | Should -Match '04'
+    }
+    It 'handles a day with no activity' {
+        $text = Format-DaySummary -Day ([datetime]'2026-03-04') -ActiveSeconds 0
+        $text | Should -Match '00:00:00'
+    }
+}
+
+Describe 'Step-Tracker - end of day rollover' {
+    It 'reports the finished day when the date changes' {
+        $s = New-TrackerState -Now $script:T0 -ActiveSeconds 7200 -IdleEpisodes 5 -LongestIdle 300
+        $nextDay = $script:T0.Date.AddDays(1).AddMinutes(1)
+        $r = Step-Tracker -State $s -Now $nextDay -LastTick $script:T0 -Moved $true
+
+        $r.DayEnded            | Should -BeTrue
+        $r.Status              | Should -Be 'DAYEND'
+        $r.EndedActiveSeconds  | Should -Be 7200
+        $r.EndedIdleEpisodes   | Should -Be 5
+        $r.EndedLongestIdle    | Should -Be 300
+        ([datetime]$r.EndedDay).Date | Should -Be $script:T0.Date
+    }
+    It 'silences any ringing alarm at the rollover' {
+        $s = New-TrackerState -Now $script:T0
+        $r = Step-Tracker -State $s -Now $script:T0.Date.AddDays(1) -LastTick $script:T0 -Moved $false
+        $r.StopAlarm | Should -BeTrue
+    }
+    It 'banks no time on the rollover tick' {
+        $s = New-TrackerState -Now $script:T0 -ActiveSeconds 50
+        Step-Tracker -State $s -Now $script:T0.Date.AddDays(1) -LastTick $script:T0 -Moved $true | Out-Null
+        $s.activeSeconds | Should -Be 50
+    }
+    It 'does not fire on a normal same-day tick' {
+        $s = New-TrackerState -Now $script:T0
+        $r = Step-Tracker -State $s -Now $script:T0.AddHours(3) -LastTick $script:T0.AddHours(3).AddSeconds(-0.25) -Moved $true
+        $r.DayEnded | Should -BeFalse
+    }
+    It 'takes precedence over a locked screen' {
+        $s = New-TrackerState -Now $script:T0
+        $r = Step-Tracker -State $s -Now $script:T0.Date.AddDays(1) -LastTick $script:T0 -Moved $false -Blocked $true
+        $r.Status | Should -Be 'DAYEND'
+    }
+}

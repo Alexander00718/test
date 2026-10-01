@@ -2,8 +2,8 @@
     TimeTracker.Core.psm1
     Pure, UI-free, clock-free logic for the time tracker.
     Every function here is deterministic: time is injected, never read from
-    Get-Date. That is what makes the 2-minute idle rule and the lock-screen
-    suppression testable in CI.
+    Get-Date. That is what makes the idle rule, the lock-screen suppression
+    and the end-of-day rollover testable in CI.
 #>
 
 Set-StrictMode -Version Latest
@@ -34,10 +34,75 @@ function Get-TrackerDefault {
         alarmSoundPath      = ''
         notificationEnabled = $true
         suppressWhenLocked  = $true
+        showDailySummary    = $true
         saveEverySeconds    = 30
         windowX             = -1
         windowY             = -1
     }
+}
+
+function Get-TrackerSettingSpec {
+    <#
+        Data-driven description of the user-editable settings. The settings
+        dialog is generated from this list, so adding a setting here is the
+        only change needed to expose it in the UI.
+    #>
+    [CmdletBinding()]
+    [OutputType([array])]
+    param()
+
+    return @(
+        [pscustomobject]@{ Name = 'idleSeconds';         Label = 'Alarm after (seconds of stillness)'; Kind = 'int';  Min = 5;  Max = 7200 }
+        [pscustomobject]@{ Name = 'alarmSeconds';        Label = 'Alarm length (seconds)';             Kind = 'int';  Min = 1;  Max = 300 }
+        [pscustomobject]@{ Name = 'movementThresholdPx'; Label = 'Ignore movement under (pixels)';     Kind = 'int';  Min = 1;  Max = 50 }
+        [pscustomobject]@{ Name = 'pollMs';              Label = 'Sampling interval (ms)';             Kind = 'int';  Min = 50; Max = 5000 }
+        [pscustomobject]@{ Name = 'alarmEnabled';        Label = 'Play alarm sound';                   Kind = 'bool' }
+        [pscustomobject]@{ Name = 'notificationEnabled'; Label = 'Show Windows notification';          Kind = 'bool' }
+        [pscustomobject]@{ Name = 'suppressWhenLocked';  Label = 'Stay silent while locked';           Kind = 'bool' }
+        [pscustomobject]@{ Name = 'showDailySummary';    Label = 'Show summary when the day ends';     Kind = 'bool' }
+    )
+}
+
+function Test-TrackerSetting {
+    <#
+        Validate one setting value coming from the settings dialog.
+        Returns @{ Valid; Value; Message } - Value is the normalised value,
+        so the caller never has to parse anything itself.
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        $Value
+    )
+
+    $spec = Get-TrackerSettingSpec | Where-Object { $_.Name -eq $Name } | Select-Object -First 1
+    if (-not $spec) {
+        return @{ Valid = $false; Value = $null; Message = ('Unknown setting: ' + $Name) }
+    }
+
+    if ($spec.Kind -eq 'bool') {
+        if ($Value -is [bool]) {
+            return @{ Valid = $true; Value = $Value; Message = '' }
+        }
+        $text = ([string]$Value).Trim()
+        if ($text -match '^(?i)(true|1|yes|on)$')  { return @{ Valid = $true; Value = $true;  Message = '' } }
+        if ($text -match '^(?i)(false|0|no|off)$') { return @{ Valid = $true; Value = $false; Message = '' } }
+        return @{ Valid = $false; Value = $null; Message = ($spec.Label + ' must be true or false') }
+    }
+
+    $parsed = 0
+    if (-not [int]::TryParse(([string]$Value).Trim(), [ref]$parsed)) {
+        return @{ Valid = $false; Value = $null; Message = ($spec.Label + ' must be a whole number') }
+    }
+    if ($parsed -lt $spec.Min -or $parsed -gt $spec.Max) {
+        return @{
+            Valid   = $false
+            Value   = $null
+            Message = ($spec.Label + ' must be between ' + $spec.Min + ' and ' + $spec.Max)
+        }
+    }
+    return @{ Valid = $true; Value = $parsed; Message = '' }
 }
 
 function Resolve-TrackerConfig {
@@ -68,8 +133,7 @@ function Resolve-TrackerConfig {
 }
 
 function Test-CursorMoved {
-    <#  True when the cursor shifted at least ThresholdPx on either axis.
-        The threshold kills sub-pixel jitter and optical-mouse drift.  #>
+    <#  True when the cursor shifted at least ThresholdPx on either axis.  #>
     [CmdletBinding()]
     [OutputType([bool])]
     param(
@@ -104,15 +168,34 @@ function New-TrackerState {
     }
 }
 
+function Format-DaySummary {
+    <#  Human-readable end-of-day report shown when the date rolls over.  #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][datetime]$Day,
+        [Parameter(Mandatory)][double]$ActiveSeconds,
+        [int]$IdleEpisodes = 0,
+        [double]$LongestIdleSeconds = 0
+    )
+
+    $lines = @(
+        $Day.ToString('dddd, dd MMMM yyyy'),
+        '',
+        ('Total working time : ' + (Format-Span $ActiveSeconds)),
+        ('Idle episodes      : ' + $IdleEpisodes),
+        ('Longest idle       : ' + (Format-Span $LongestIdleSeconds))
+    )
+    return ($lines -join [Environment]::NewLine)
+}
+
 function Step-Tracker {
     <#
         The heart of the tracker: one deterministic state transition.
 
-        Precedence is deliberate - Blocked beats Paused beats Moved. A locked
-        workstation must never alarm, never notify, and never bank time, no
-        matter what the cursor coordinates say.
-
-        Returns the decision; the caller applies it to sound and pixels.
+        Precedence: day rollover beats everything, then Blocked, then Paused,
+        then Moved. A locked workstation must never alarm, never notify and
+        never bank time, whatever the cursor coordinates say.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -131,19 +214,35 @@ function Step-Tracker {
     $delta = ($Now - $LastTick).TotalSeconds
 
     $result = @{
-        Status      = 'MOVING'
-        IdleSeconds = 0.0
-        StartAlarm  = $false
-        StopAlarm   = $false
-        Notify      = $false
-        NotifyTitle = ''
-        NotifyText  = ''
-        State       = $State
+        Status             = 'MOVING'
+        IdleSeconds        = 0.0
+        StartAlarm         = $false
+        StopAlarm          = $false
+        Notify             = $false
+        NotifyTitle        = ''
+        NotifyText         = ''
+        DayEnded           = $false
+        EndedDay           = $null
+        EndedActiveSeconds = 0.0
+        EndedIdleEpisodes  = 0
+        EndedLongestIdle   = 0.0
+        State              = $State
+    }
+
+    # The date changed under us: hand the finished day back to the caller so it
+    # can be persisted and reported before a fresh day starts.
+    if ($Now.Date -ne [datetime]$State.day) {
+        $result.DayEnded           = $true
+        $result.EndedDay           = [datetime]$State.day
+        $result.EndedActiveSeconds = [double]$State.activeSeconds
+        $result.EndedIdleEpisodes  = [int]$State.idleEpisodes
+        $result.EndedLongestIdle   = [double]$State.longestIdle
+        $result.Status             = 'DAYEND'
+        $result.StopAlarm          = $true
+        return $result
     }
 
     if ($Blocked) {
-        # Lock screen or screen saver: freeze everything and re-arm the idle
-        # clock so returning to the desk does not fire an instant alarm.
         $State.alarmFired   = $false
         $State.lastMoveTime = $Now
         $result.Status      = 'LOCKED'
@@ -159,8 +258,6 @@ function Step-Tracker {
     }
 
     if ($Moved) {
-        # Only bank plausible deltas. A huge delta means the process was
-        # suspended or the machine slept; that time was not work.
         if ($delta -gt 0 -and $delta -le $idleLimit) {
             $State.activeSeconds += $delta
         }
@@ -207,5 +304,6 @@ function ConvertTo-DayRecord {
     }
 }
 
-Export-ModuleMember -Function Format-Span, Get-TrackerDefault, Resolve-TrackerConfig,
-    Test-CursorMoved, New-TrackerState, Step-Tracker, ConvertTo-DayRecord
+Export-ModuleMember -Function Format-Span, Get-TrackerDefault, Get-TrackerSettingSpec,
+    Test-TrackerSetting, Resolve-TrackerConfig, Test-CursorMoved, New-TrackerState,
+    Format-DaySummary, Step-Tracker, ConvertTo-DayRecord

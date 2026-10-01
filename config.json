@@ -1,13 +1,14 @@
-﻿{
-    "saveEverySeconds":  30,
-    "movementThresholdPx":  2,
-    "alarmEnabled":  true,
-    "notificationEnabled":  true,
-    "alarmSeconds":  15,
-    "windowX":  1650,
-    "pollMs":  250,
-    "windowY":  902,
-    "suppressWhenLocked":  true,
-    "alarmSoundPath":  "",
-    "idleSeconds":  120
+{
+  "idleSeconds": 120,
+  "pollMs": 250,
+  "movementThresholdPx": 2,
+  "alarmEnabled": true,
+  "alarmSeconds": 15,
+  "alarmSoundPath": "",
+  "notificationEnabled": true,
+  "suppressWhenLocked": true,
+  "showDailySummary": true,
+  "saveEverySeconds": 30,
+  "windowX": -1,
+  "windowY": -1
 }
