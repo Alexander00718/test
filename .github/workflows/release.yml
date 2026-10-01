@@ -1,0 +1,58 @@
+name: Release
+
+# Tag a commit to ship it:  git tag v1.0.0 && git push origin v1.0.0
+on:
+  push:
+    tags: [ 'v*.*.*' ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build, e.g. 1.0.0'
+        required: true
+
+permissions:
+  contents: write   # needed to create the GitHub Release
+
+jobs:
+  release:
+    name: Verify and publish
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install PowerShell modules
+        shell: powershell
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck -Scope CurrentUser
+          Install-Module PSScriptAnalyzer -MinimumVersion 1.22.0 -Force -Scope CurrentUser
+
+      # A release never ships unverified: the same gates as CI, strict.
+      - name: Lint
+        shell: powershell
+        run: .\build\Build.ps1 -Task Lint -Strict
+
+      - name: Test
+        shell: powershell
+        run: .\build\Build.ps1 -Task Test
+
+      - name: Package
+        shell: powershell
+        run: |
+          $v = '${{ inputs.version }}'
+          if ([string]::IsNullOrWhiteSpace($v)) { .\build\Build.ps1 -Task Package }
+          else { .\build\Build.ps1 -Task Package -Version $v }
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*.zip
+            artifacts/*.sha256
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

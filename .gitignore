@@ -1,0 +1,15 @@
+# build output
+artifacts/
+
+# runtime data - your tracked hours are yours, not the repo's
+data/
+
+# local config drift (window position is written back on exit)
+config.local.json
+
+# editors / OS
+.vs/
+.vscode/
+*.suo
+Thumbs.db
+desktop.ini
