@@ -1,0 +1,13 @@
+﻿{
+    "saveEverySeconds":  30,
+    "movementThresholdPx":  2,
+    "alarmEnabled":  true,
+    "notificationEnabled":  true,
+    "alarmSeconds":  15,
+    "windowX":  1650,
+    "pollMs":  250,
+    "windowY":  902,
+    "suppressWhenLocked":  true,
+    "alarmSoundPath":  "",
+    "idleSeconds":  120
+}

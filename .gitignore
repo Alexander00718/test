@@ -1,0 +1,25 @@
+# build output
+artifacts/
+
+# runtime data - your tracked hours are yours, not the repo's
+data/
+
+# local config drift (window position is written back on exit)
+config.local.json
+
+# secrets - never commit these. The repo needs none today; this is a guard
+# against a future .env appearing by accident.
+.env
+.env.*
+!.env.example
+*.pfx
+*.snk
+*.p12
+secrets.json
+
+# editors / OS
+.vs/
+.vscode/
+*.suo
+Thumbs.db
+desktop.ini

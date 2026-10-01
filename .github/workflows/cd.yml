@@ -1,0 +1,82 @@
+name: CD
+
+# Deploy only after CI succeeds on the default branch. workflow_run fires
+# after CI finishes, so this never races ahead of the gates.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------
+  # This project has NO deployment infrastructure. It is a Windows desktop
+  # application: there is no server, container registry, cloud account or
+  # domain to deploy to. Its only real distribution channel is a GitHub
+  # Release, which .github/workflows/release.yml already publishes on tags.
+  #
+  # Rather than invent infrastructure, the deploy job below stays dormant
+  # until a repository variable named DEPLOY_TARGET exists. Setting it
+  # activates the job with no code change required.
+  # ---------------------------------------------------------------------
+  not-configured:
+    name: Deployment target not configured
+    if: vars.DEPLOY_TARGET == ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Explain what is still required
+        run: |
+          {
+            echo '## CD is not configured - this is expected'
+            echo ''
+            echo 'No deployment target exists for this repository yet.'
+            echo 'Distribution currently happens through tagged GitHub Releases'
+            echo '(see .github/workflows/release.yml): push a tag like v1.0.1.'
+            echo ''
+            echo '### To enable this workflow, provide:'
+            echo ''
+            echo '1. Repository variable DEPLOY_TARGET - the name of a GitHub'
+            echo '   Environment to deploy into (for example: production).'
+            echo '2. A GitHub Environment of that name, with any required'
+            echo '   reviewers and protection rules.'
+            echo '3. Whatever credentials that target needs, stored as'
+            echo '   Environment Secrets - never as literals in this file.'
+            echo '4. The actual deploy command, replacing the placeholder step'
+            echo '   in the deploy job.'
+            echo ''
+            echo 'Decide first what deployment even means here: an MSI or winget'
+            echo 'package, a signed executable, an internal file share, or an'
+            echo 'intranet download page. That choice determines items 3 and 4.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy
+    # Dormant until DEPLOY_TARGET is set, and never runs on a failed CI run.
+    if: |
+      vars.DEPLOY_TARGET != '' &&
+      (github.event_name == 'workflow_dispatch' ||
+       github.event.workflow_run.conclusion == 'success')
+    runs-on: windows-latest
+    environment: ${{ vars.DEPLOY_TARGET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-ps-deps
+
+      # Rebuild from source rather than trusting a cross-workflow artifact,
+      # so what ships is provably built from this commit.
+      - name: Build release package
+        shell: powershell
+        run: .\build\Build.ps1 -Task Package
+
+      - name: Deployment placeholder
+        shell: powershell
+        run: |
+          Write-Host 'DEPLOY_TARGET is set, but no deploy command is implemented.'
+          Write-Host 'Replace this step with the real deployment for your target.'
+          Write-Host 'Artifacts available in artifacts\:'
+          Get-ChildItem artifacts | ForEach-Object { Write-Host ('  ' + $_.Name) }
+          exit 1   # fail loudly rather than reporting a deploy that did not happen
