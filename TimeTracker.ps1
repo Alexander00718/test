@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
     TimeTracker.ps1
     Windows tray app: measures how long the mouse cursor is actually moving,
@@ -237,6 +237,12 @@ $lblSub.Dock      = 'Top'
 $lblSub.Height    = 20
 $lblSub.Text      = ''
 
+
+function Update-TimeColor {
+    $script:currentColorIndex = ($script:currentColorIndex + 1) % $script:colorCycle.Count
+    $lblTotal.ForeColor = $script:colorCycle[$script:currentColorIndex]
+}
+
 # Button strip along the bottom.
 $buttons           = New-Object System.Windows.Forms.Panel
 $buttons.Dock      = 'Bottom'
@@ -262,10 +268,23 @@ function New-FlatButton {
     return $b
 }
 
-$btnSettings = New-FlatButton -Text 'Settings' -X 10  -Width 88 -Tip 'Change the alarm time and other options'
-$btnPause    = New-FlatButton -Text 'Pause'    -X 106 -Width 88 -Tip 'Stop counting until you resume'
-$btnToday    = New-FlatButton -Text 'Today'    -X 202 -Width 88 -Tip "Show today's totals so far"
-$buttons.Controls.AddRange(@($btnSettings, $btnPause, $btnToday))
+$btnSettings = New-FlatButton -Text 'Settings' -X 10  -Width 60 -Tip 'Change the alarm time and other options'
+$btnPause    = New-FlatButton -Text 'Pause'    -X 76  -Width 60 -Tip 'Stop counting until you resume'
+$btnToday    = New-FlatButton -Text 'Today'    -X 142 -Width 60 -Tip "Show today's totals so far"
+
+$btnColor    = New-Object System.Windows.Forms.Button
+$btnColor.Text           = 'Color'
+$btnColor.FlatStyle      = 'Flat'
+$btnColor.BackColor      = [System.Drawing.Color]::Red
+$btnColor.ForeColor      = [System.Drawing.Color]::White
+$btnColor.Font           = New-Object System.Drawing.Font('Segoe UI', 8.5)
+$btnColor.Size           = New-Object System.Drawing.Size(60, 26)
+$btnColor.Location       = New-Object System.Drawing.Point(208, 9)
+$btnColor.FlatAppearance.BorderSize = 0
+$btnColor.Cursor         = [System.Windows.Forms.Cursors]::Hand
+$tt = New-Object System.Windows.Forms.ToolTip
+$tt.SetToolTip($btnColor, 'Cycle time color: red, blue, yellow, green')
+$buttons.Controls.AddRange(@($btnSettings, $btnPause, $btnToday, $btnColor))
 
 $form.Controls.AddRange(@($buttons, $lblSub, $lblStatus, $lblTotal, $lblCaption))
 
@@ -420,6 +439,8 @@ function Show-DaySummary {
 # ------------------------------------------------------------- controls ----
 $script:paused = $false
 
+
+$btnColor.add_Click({ Update-TimeColor })
 $btnSettings.add_Click({ Show-SettingsDialog })
 
 $btnPause.add_Click({
@@ -574,3 +595,5 @@ $form.add_FormClosing({
 $script:timer.Start()
 [System.Windows.Forms.Application]::EnableVisualStyles()
 [System.Windows.Forms.Application]::Run($form)
+
+
